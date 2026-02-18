@@ -1,9 +1,3 @@
-# ─────────────────────────────────────────────
-# Project Iron — Conda Environment
-# Usage: conda env create -f conda_environment.yaml
-#        conda activate project-iron
-# ─────────────────────────────────────────────
-
 name: project-iron
 
 channels:
@@ -15,7 +9,6 @@ dependencies:
   # Python
   - python=3.10.13
 
-  # System-level (conda handles these better than pip on bare metal)
   - libgl=1.7.0
   - libusb=1.0.26
 

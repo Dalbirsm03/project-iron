@@ -1,23 +1,21 @@
 # Core ML
-torch==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
-torchvision==0.16.0+cpu --index-url https://download.pytorch.org/whl/cpu
+torch==2.2.0 --index-url https://download.pytorch.org/whl/cpu
+torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cpu
 
 # OpenVINO (Intel edge inference)
-openvino==2023.2.0
-openvino-dev==2023.2.0
+openvino==2024.6.0
 
 # LLM / Agentic
 langchain==0.1.0
 langchain-community==0.0.10
 
 # Vector Store
-faiss-cpu==1.7.4
+faiss-cpu==1.9.0
 
 # Embeddings / Transformers
-transformers==4.36.0
-sentence-transformers==2.2.2
-huggingface-hub==0.20.1
-tokenizers==0.15.0
+tokenizers==0.21.0
+sentence-transformers==3.0.0
+huggingface-hub==0.26.0
 
 # MLflow Tracking
 mlflow==2.9.2
