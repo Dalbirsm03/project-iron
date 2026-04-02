@@ -1,4 +1,4 @@
-import numpy as np
+import numpy as np # pyright: ignore[reportMissingImports]
 from typing import Dict, List, Tuple
 
 class TemporalStitcher:
