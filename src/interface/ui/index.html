@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Iron - Trajectory Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; display: flex; background-color: #111; color: white; font-family: sans-serif; }
+        #video-section { width: 50vw; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; }
+        #video-player { width: 100%; border: 2px solid #444; border-radius: 4px; }
+        #canvas-3d { width: 50vw; height: 100vh; }
+        .controls { margin-top: 15px; font-size: 1.2rem; }
+    </style>
+</head>
+<body>
+    <div id="video-section">
+        <h2>2D Video Sync</h2>
+        <video id="video-player" controls src="../../../data/raw/test_video.mp4"></video>
+        <div class="controls">
+            <p>Current Frame: <span id="frame-display">0</span></p>
+        </div>
+    </div>
+    
+    <div id="canvas-3d"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
