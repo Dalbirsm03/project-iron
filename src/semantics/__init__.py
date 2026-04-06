@@ -3,30 +3,26 @@ src/semantics/__init__.py
 =========================
 Semantics module for Project Iron.
 
-This module is responsible for language understanding, feature embeddings,
-and semantic reasoning over the outputs of the geometry pipeline
-(depth maps, tracked points, spatial features).
+Responsible for language understanding, feature embeddings, and semantic
+reasoning over the outputs of the geometry pipeline (depth maps, tracked
+points, spatial features from V-JEPA2).
 
-Planned components (Week 4+):
-    - EmbeddingEngine  : Extract semantic embeddings from V-JEPA2 features
-    - ReasoningModule  : Map spatial tracks to semantic labels
-    - LanguageGrounder : Ground natural language queries to spatial regions
-
-Current status:
-    Week 3 focused on model optimization (ONNX → IR → INT8 quantization).
-    Semantic reasoning components will be built on top of the optimized
-    OpenVINO models in subsequent weeks.
-
-Integration point:
-    from src.semantics import EmbeddingEngine  # (coming Week 4)
+Components (Tasks 7.1 & 7.2):
+    SemanticExtractor : Maps CoTracker3 pixel tracks → V-JEPA2 1024-d embeddings
+    PCAReducer        : Reduces 1024-d embeddings → compact 64-d vectors via PCA
 
 Author: Radhe Tare
 Team  : Semantics (language, embeddings, reasoning)
 """
 
-# ── Module version ─────────────────────────────────────────
-__version__ = "0.1.0"
+from .semantic_extractor import SemanticExtractor, pixel_to_patch_index
+from .pca_reducer import PCAReducer
+
+__version__ = "0.2.0"
 __author__  = "Radhe Tare"
 
-# ── Public API (to be populated in Week 4) ─────────────────
-__all__ = []
+__all__ = [
+    "SemanticExtractor",
+    "pixel_to_patch_index",
+    "PCAReducer",
+]
