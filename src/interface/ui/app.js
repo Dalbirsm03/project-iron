@@ -28,22 +28,43 @@ const pointClouds = [];
 
 function buildTrajectories(data) {
     data.tracks.forEach(track => {
+        // 1. Build the Line Trajectory with Semantic Colors
         const points = [];
+        const colors = [];
+
         track.path.forEach(pt => {
+            // Push spatial coordinates
             points.push(new THREE.Vector3(pt.x, pt.y, pt.z));
+            
+            // Push the normalized PCA colors from the JSON
+            // Failsafe: defaults to white if the python script failed to inject RGB
+            colors.push(
+                pt.r !== undefined ? pt.r : 1, 
+                pt.g !== undefined ? pt.g : 1, 
+                pt.b !== undefined ? pt.b : 1
+            );
         });
 
         const geometry = new THREE.BufferGeometry().setFromPoints(points);
-        const material = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 2 });
+        // Inject the color buffer into the line geometry
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+        // CRITICAL FIX: Remove 'color: 0x00ff00' and enable vertexColors
+        const material = new THREE.LineBasicMaterial({ vertexColors: THREE.VertexColors, linewidth: 2 });
         const line = new THREE.Line(geometry, material);
         
         line.geometry.setDrawRange(0, 0); 
         scene.add(line);
         trajectoryLines.push({ line: line, data: track.path });
 
+        // 2. Build the moving tracking dot with Semantic Colors
         const dotGeo = new THREE.BufferGeometry();
         dotGeo.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0], 3));
-        const dotMat = new THREE.PointsMaterial({ color: 0xff0000, size: 8 });
+        // Initialize an empty color buffer for the dot
+        dotGeo.setAttribute('color', new THREE.Float32BufferAttribute([1, 1, 1], 3)); 
+        
+        // CRITICAL FIX: Remove the hardcoded red and enable vertexColors
+        const dotMat = new THREE.PointsMaterial({ size: 8, vertexColors: THREE.VertexColors });
         const dot = new THREE.Points(dotGeo, dotMat);
         scene.add(dot);
         pointClouds.push({ dot: dot, data: track.path });
@@ -80,7 +101,7 @@ video.addEventListener('seeked', sync3DWithVideo);
 let globalTrajectoryData = null;
 
 // Fetch the real data converted from the Parquet file
-fetch('trajectory_data.json')
+fetch('trajectory_data.json?nocache=' + new Date().getTime())
     .then(response => {
         if (!response.ok) throw new Error("trajectory_data.json not found. Did you run data_converter.py?");
         return response.json();
