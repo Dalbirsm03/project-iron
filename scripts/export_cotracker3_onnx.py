@@ -1,70 +1,59 @@
 """
-export_cotracker3_onnx_fixed.py  (v9 — patch F.grid_sample at the source)
-==========================================================================
-ROOT CAUSE (fully understood):
-  bilinear_sampler in model_utils.py handles both 4D and 5D inputs.
-  For 5D input [B,C,T,H,W] it reorders coords then calls F.grid_sample
-  with a 5D tensor. OpenVINO only supports 4D grid_sample.
+export_cotracker3_onnx.py
+=========================
 
-THE CORRECT FIX:
-  Patch F.grid_sample so that when called with 5D input:
-    - Flatten T into B: [B,C,T,H,W] → [B*T, C, H, W]
-    - coords are [B, Ho, Wo, D, 3] in xyt order after bilinear_sampler's
-      reorder. We need [B*T, Ho, Wo, D, 2] (xy only, tiled T times)
-    
-  BUT: bilinear_sampler already does the coord reorder to xyt BEFORE
-  calling grid_sample. So grid_sample receives coords in [x,y,t] order.
-  For 5D grid_sample, coords shape is [B, Ho, Wo, Do, 3].
-  
-  To flatten T into B:
-    - inp4: [B*T, C, H, W]  
-    - take only xy from coords (first 2 dims): [B, Ho, Wo, Do, 2]
-    - tile to [B*T, Ho, Wo, Do, 2] ... but Do=1 here
-    - flatten: [B*T, Ho, Wo*Do, 2] = [B*T, Ho, Wo, 2]
-    - call 4D grid_sample → [B*T, C, Ho, Wo]
-    - reshape → [B, C, T, Ho, Wo] ... but output must be [B,C,R1,R2,1]
-    
-  ACTUAL shapes confirmed from debug:
-    Call 1 (sample_features5d):
-      input  [B,C,T,H,W]  = [1, 128, 4, 56, 56]
-      coords [B,R1,R2,1,3]= [1, 49, 100, 1, 3]  ← after bilinear reorder→xyt
-      output must be      [B,C,R1,R2,1] = [1,128,4,49,100]? No...
-      
-    Actually bilinear_sampler receives [B,C,T,H,W] input and
-    coords [B,R1,R2,1,3]. It does coords[...,[1,2,0]] then normalizes
-    then calls F.grid_sample([B,C,T,H,W], normalized_coords[B,R1,R2,1,3])
-    F.grid_sample 5D: input[B,C,D,H,W], grid[B,Ho,Wo,Do,3] → [B,C,Ho,Wo,Do]
-    So output = [B, C, R1, R2, 1]  ✓ matches what sample_features5d expects
+Export CoTracker3 model to ONNX with OpenVINO compatibility fixes.
 
-    Call 2 (get_correlation_feat):  
-      input  [B*T, D, 1, H_, W_]  ← 5D with T_dim=1
-      coords [B*T, N, r, r, 3]    ← after reorder: xyt
-      output [B*T, D, N, r, r]    ← used in .view(B,T,D,N,r,r)
+------------------------------------------------------------------
+PROBLEM
+------------------------------------------------------------------
+PyTorch's F.grid_sample supports both 4D and 5D inputs:
+    4D: [B, C, H, W]
+    5D: [B, C, D, H, W]
 
-  UNIFIED PATCH for F.grid_sample when input is 5D:
-    input [B, C, D, H, W], grid [B, Ho, Wo, Do, 3]
-    → treat D as part of spatial: flatten [B,C,D,H,W]→[B*D,C,H,W]
-      but grid coords have t component... 
-      
-    SIMPLER: since T (or D) is always 1 in call 2, and in call 1 we
-    want to sample across T using t-coord:
-    
-    Use the t-coordinate to index into T dimension via gather,
-    then do 4D xy grid_sample. But t is continuous...
-    
-    SIMPLEST CORRECT APPROACH:
-    When input is 5D [B,C,T,H,W]:
-      - reshape to [B, C*T, H, W] ... no, grid_sample won't know
-      
-    ACTUAL SIMPLEST: just call the 5D grid_sample via torch directly,
-    but reimplement it manually using 4D calls by looping over T.
-    Since T is small (1 or 4) this is fine for export — the loop
-    gets unrolled by TorchScript into static 4D ops.
+However, OpenVINO only supports 4D grid_sample.
 
-⚠️  RUN IN: openvino_env
+CoTracker3 internally uses 5D grid_sample for spatiotemporal
+sampling, which breaks ONNX → OpenVINO conversion.
+
+------------------------------------------------------------------
+SOLUTION
+------------------------------------------------------------------
+Override F.grid_sample with a custom implementation that:
+
+    • Passes 4D inputs unchanged
+    • Converts 5D inputs into multiple 4D operations by:
+        - Iterating over temporal dimension (T)
+        - Applying 4D grid_sample per frame
+        - Combining results using time-based interpolation weights
+
+This ensures the exported ONNX graph only contains 4D grid_sample
+operations, making it compatible with OpenVINO.
+
+------------------------------------------------------------------
+KEY IDEA
+------------------------------------------------------------------
+For 5D input [B, C, T, H, W]:
+    - Process each frame independently using 4D grid_sample
+    - Use the temporal coordinate (t) from the sampling grid
+      to compute interpolation weights
+    - Aggregate results across time
+
+This avoids unsupported 5D operations while preserving behavior.
+
+------------------------------------------------------------------
+USAGE
+------------------------------------------------------------------
+Run inside OpenVINO environment:
+
     source ~/Internship/openvino_project/openvino_env/bin/activate
     cd ~/Internship/openvino_project/scripts
     python export_cotracker3_onnx.py
+
+After export:
+
+    cd ~/Internship/openvino_project
+    ovc models/onnx/cotracker3_ovfix.onnx --output_model models/ir/cotracker3.xml
 """
 
 import os
@@ -72,125 +61,173 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
+# ----------------------------
+# Paths
+# ----------------------------
+
 WEIGHTS_PATH = "../models/weights/cotracker3/scaled_offline.pth"
 ONNX_PATH    = "../models/onnx/cotracker3_ovfix.onnx"
+
 os.makedirs("../models/onnx", exist_ok=True)
 
+# Store original PyTorch implementation
 _orig_grid_sample = F.grid_sample
+
 
 def _grid_sample_ov(input, grid, mode='bilinear',
                     padding_mode='border', align_corners=True):
     """
-    OpenVINO-compatible grid_sample.
-    
-    4D input → pass straight through (OpenVINO supports this).
-    5D input [B,C,T,H,W] with grid [B,Ho,Wo,To,3] (coords in x,y,t order):
-      → loop over T frames, do 4D grid_sample for each, stack result.
-      
-    This unrolls cleanly in TorchScript and produces only 4D grid_sample
-    ops in the ONNX graph.
+    OpenVINO-compatible replacement for torch.nn.functional.grid_sample.
+
+    Behavior:
+        • For 4D input: calls original implementation
+        • For 5D input: decomposes operation into multiple 4D calls
+
+    Args:
+        input: Tensor of shape [B,C,H,W] or [B,C,T,H,W]
+        grid : Sampling grid
+        mode, padding_mode, align_corners: Same as PyTorch API
+
+    Returns:
+        Sampled tensor with shape consistent with PyTorch behavior
     """
+
+    # Case 1: Standard 4D input (supported by OpenVINO)
     if input.dim() == 4:
         return _orig_grid_sample(input, grid, mode=mode,
                                  padding_mode=padding_mode,
                                  align_corners=align_corners)
 
+    # Case 2: 5D input (requires decomposition)
     if input.dim() == 5:
         B, C, T, H, W = input.shape
-        # grid: [B, Ho, Wo, To, 3] where last dim is (x, y, t) after reorder
-        # To is the output time dim (usually 1)
+
+        # Grid shape: [B, Ho, Wo, To, 3] → (x, y, t)
         Ho, Wo, To = grid.shape[1], grid.shape[2], grid.shape[3]
 
         results = []
+
         for t_idx in range(T):
-            # frame: [B, C, H, W]
+            # Extract frame at time t_idx → [B, C, H, W]
             frame = input[:, :, t_idx, :, :]
 
-            # For this frame, use the t_idx-th slice of the t-coordinate
-            # or just use xy coords (first 2) since we're iterating over T
-            # grid[..., :2] gives xy, grid[..., 2] gives t-coord
-            # We want to sample frame t_idx using xy coords
-            # Weight this frame's contribution by how close t-coord is to t_idx
-            
-            # xy grid for 4D: [B, Ho, Wo*To, 2]
+            # Extract spatial coordinates (x, y)
             xy = grid[..., :2]                          # [B, Ho, Wo, To, 2]
             xy_4d = xy.reshape(B, Ho, Wo * To, 2)       # [B, Ho, Wo*To, 2]
 
-            # t coordinate normalized to [0, T-1] range (already done by bilinear_sampler)
-            # grid[...,2] is t in [-1,1] range after normalization
-            # Convert back: t_norm in [-1,1] → t_idx_float in [0, T-1]
-            t_coord = grid[..., 2]                      # [B, Ho, Wo, To]
-            t_float = (t_coord + 1) / 2 * max(T - 1, 1)  # [0, T-1]
+            # Temporal coordinate in range [-1, 1]
+            t_coord = grid[..., 2]
 
-            # Weight for this frame: max(0, 1 - |t_float - t_idx|)
-            weight = (1.0 - (t_float - t_idx).abs()).clamp(min=0)  # [B, Ho, Wo, To]
-            weight_4d = weight.reshape(B, Ho, Wo * To)              # [B, Ho, Wo*To]
+            # Convert normalized t → index space [0, T-1]
+            t_float = (t_coord + 1) / 2 * max(T - 1, 1)
 
-            out_frame = _orig_grid_sample(frame, xy_4d, mode=mode,
-                                          padding_mode=padding_mode,
-                                          align_corners=align_corners)
-            # out_frame: [B, C, Ho, Wo*To]
+            # Compute interpolation weight for current frame
+            weight = (1.0 - (t_float - t_idx).abs()).clamp(min=0)
+            weight_4d = weight.reshape(B, Ho, Wo * To)
 
-            # Apply time weight
-            weight_exp = weight_4d.unsqueeze(1)         # [B, 1, Ho, Wo*To]
+            # Perform 4D grid_sample
+            out_frame = _orig_grid_sample(
+                frame,
+                xy_4d,
+                mode=mode,
+                padding_mode=padding_mode,
+                align_corners=align_corners
+            )
+
+            # Apply temporal weight
+            weight_exp = weight_4d.unsqueeze(1)
             results.append(out_frame * weight_exp)
 
-        # Sum weighted frames → [B, C, Ho, Wo*To]
+        # Combine contributions from all frames
         out = torch.stack(results, dim=0).sum(dim=0)
 
-        # Reshape to [B, C, Ho, Wo, To]
+        # Reshape to expected output format
         out = out.reshape(B, C, Ho, Wo, To)
-        # Permute to match expected [B, C, To, Ho, Wo] ... 
-        # Actually F.grid_sample 5D returns [B, C, Ho, Wo, To] directly
-        # so keep as [B, C, Ho, Wo, To]
+
         return out
 
     raise ValueError(f"_grid_sample_ov: unsupported input.dim={input.dim()}")
 
 
-# Patch F.grid_sample globally
+# Patch grid_sample globally
 F.grid_sample = _grid_sample_ov
 
-# Also patch it in model_utils module namespace
+# Patch inside CoTracker utilities as well
 import cotracker.models.core.model_utils as mu
 mu.F.grid_sample = _grid_sample_ov
 
-# ── Load model ────────────────────────────────────────────
+
+# ----------------------------
+# Load Model
+# ----------------------------
+
 print("Loading CoTracker3 model...")
+
 from cotracker.predictor import CoTrackerPredictor
 
 predictor = CoTrackerPredictor(
-    checkpoint=WEIGHTS_PATH, offline=True, window_len=60)
+    checkpoint=WEIGHTS_PATH,
+    offline=True,
+    window_len=60
+)
+
 cotracker = predictor.model
 cotracker.eval()
 
+
 class CoTrackerExportWrapper(nn.Module):
+    """
+    Wrapper to normalize CoTracker model outputs for ONNX export.
+
+    Ensures that the forward method returns a single tensor, which
+    is required for ONNX export compatibility.
+    """
+
     def __init__(self, model):
         super().__init__()
         self.model = model
 
     def forward(self, video, queries):
         outputs = self.model(video, queries)
+
         if isinstance(outputs, (list, tuple)):
             return outputs[0]
+
         return outputs
+
 
 wrapped = CoTrackerExportWrapper(cotracker)
 wrapped.eval()
 
+
+# ----------------------------
+# Dummy Inputs
+# ----------------------------
+
+# Video shape: [B, T, C, H, W]
+# Queries shape: [B, N, 3]
 B, T, C, H, W = 1, 4, 3, 224, 224
+
 video   = torch.randn(B, T, C, H, W)
 queries = torch.randn(B, 100, 3)
 
 print(f"video  : {list(video.shape)}")
 print(f"queries: {list(queries.shape)}")
+
 print("\nRunning sanity forward pass...")
 
 with torch.no_grad():
     out = wrapped(video, queries)
-print(f"✅ Sanity pass output: {out.shape}")
+
+print(f"Sanity pass output shape: {out.shape}")
+
+
+# ----------------------------
+# ONNX Export
+# ----------------------------
 
 print("\nExporting to ONNX...")
+
 with torch.no_grad():
     torch.onnx.export(
         wrapped,
@@ -207,12 +244,13 @@ with torch.no_grad():
         dynamo=False,
     )
 
+# Restore original implementation
 F.grid_sample = _orig_grid_sample
 
 size_mb = os.path.getsize(ONNX_PATH) / 1e6
-print(f"\n✅ ONNX export complete!")
-print(f"   Saved: {ONNX_PATH}  ({size_mb:.1f} MB)")
-print()
-print("── Next: IR conversion (openvino_env, from project root) ──")
-print("cd ~/Internship/openvino_project")
+
+print("\nONNX export complete!")
+print(f"Saved: {ONNX_PATH}  ({size_mb:.1f} MB)")
+
+print("\nNext step:")
 print("ovc models/onnx/cotracker3_ovfix.onnx --output_model models/ir/cotracker3.xml")

@@ -6,13 +6,17 @@ from huggingface_hub import snapshot_download
 # Configuration
 # ----------------------------
 
+# Mapping of local model names to Hugging Face repository IDs
 MODELS = {
     "vjepa2_vitl": "facebook/vjepa2-vitl-fpc64-256",
     "cotracker3": "facebook/cotracker3",
     "depth_anything_v2_small": "depth-anything/Depth-Anything-V2-Small-hf"
 }
 
+# Directory where model weights will be stored
 SAVE_DIR = "../models/weights"
+
+# File to store SHA256 hashes for downloaded weights
 HASH_FILE = "../models/weights/hashes.txt"
 
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -22,6 +26,15 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 # ----------------------------
 
 def sha256sum(filepath):
+    """
+    Compute the SHA256 hash of a file.
+
+    Args:
+        filepath (str): Path to the file.
+
+    Returns:
+        str: Hexadecimal SHA256 digest.
+    """
     h = hashlib.sha256()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
@@ -33,6 +46,16 @@ def sha256sum(filepath):
 # ----------------------------
 
 def main():
+    """
+    Download model weights from Hugging Face and compute SHA256 hashes
+    for verification.
+
+    The script:
+        1. Downloads selected model weight files
+        2. Stores them in SAVE_DIR
+        3. Computes SHA256 hashes for each weight file
+        4. Logs hashes to HASH_FILE for integrity checking
+    """
     print("Starting model download...\n")
 
     with open(HASH_FILE, "w") as hash_log:
@@ -48,10 +71,10 @@ def main():
 
             print(f"Saved to: {local_path}")
 
-            # Compute hashes for weight files
+            # Iterate through downloaded files and compute hashes
             for root, _, files in os.walk(local_path):
                 for file in files:
-                    if file.endswith((".bin", ".pt", ".pth" ,".safetensors")):
+                    if file.endswith((".bin", ".pt", ".pth", ".safetensors")):
                         full_path = os.path.join(root, file)
                         digest = sha256sum(full_path)
                         hash_log.write(f"{name} | {file} | {digest}\n")
