@@ -195,6 +195,11 @@ class SemanticExtractor:
         B, T, N, _ = tracks.shape
         semantic = np.zeros((B, T, N, EMBED_DIM), dtype=np.float32)
 
+        # V-JEPA INT8 may output fewer temporal slots than input frames.
+        # e.g. 4 input frames → 392 tokens = 2×196 (2 temporal slots).
+        # Derive actual output T from features shape.
+        T_out = features.shape[1] // NUM_PATCHES  # actual temporal slots
+
         for b in range(B):
             for t in range(T):
                 # pixel coords for all N points at frame t
@@ -204,8 +209,12 @@ class SemanticExtractor:
                 # Map pixel → flat patch index (0..195)
                 patch_idx = pixel_to_patch_index(x, y)   # [N]
 
-                # V-JEPA features for frame t start at row t*196
-                frame_offset = t * NUM_PATCHES
+                # Map input frame t → nearest V-JEPA output temporal slot.
+                # If T_out < T, multiple input frames map to the same slot.
+                t_out = min(t, T_out - 1)
+
+                # V-JEPA features for temporal slot t_out start at t_out*196
+                frame_offset = t_out * NUM_PATCHES
                 token_indices = frame_offset + patch_idx  # [N]
 
                 # Extract embeddings: [N, 1024]
